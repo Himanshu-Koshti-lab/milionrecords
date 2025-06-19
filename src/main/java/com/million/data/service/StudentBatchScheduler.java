@@ -1,9 +1,6 @@
 package com.million.data.service;
 
-import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
-import lombok.AllArgsConstructor;
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
@@ -21,12 +18,12 @@ public class StudentBatchScheduler {
 
     public StudentBatchScheduler(StudentBatchService studentBatchService) {
         this.studentBatchService = studentBatchService;
-        startScheduler();
+        startFirstInstanceScheduler();
     }
 
     private static final ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
 
-    public void startScheduler() {
+    public void startFirstInstanceScheduler() {
         scheduler.scheduleAtFixedRate(() -> {
             try {
                 log.info("Running scheduled student batch processing...");
@@ -34,7 +31,7 @@ public class StudentBatchScheduler {
             } catch (Exception e) {
                 log.error("Error during scheduled batch:", e);
             }
-        }, 1, 60, TimeUnit.MINUTES); // first run immediately, then every 60 min
+        }, 0, 600, TimeUnit.SECONDS); // first run immediately, then every 60 min
     }
 
     @PreDestroy

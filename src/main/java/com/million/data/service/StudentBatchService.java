@@ -13,7 +13,11 @@ import org.springframework.stereotype.Service;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.concurrent.*;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ForkJoinPool;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 @Service
 @Slf4j
@@ -24,34 +28,106 @@ public class StudentBatchService {
     private final MasterBatchRepository masterBatchRepository;
     private final SubBatchRepository subBatchRepository;
 
-    private final ExecutorService executor = Executors.newFixedThreadPool(5); // processing threads
+
+    public static final AtomicInteger ATOMIC_INTEGER = new AtomicInteger(0);
+    private final ExecutorService executor = Executors.newFixedThreadPool(2); // processing threads
+
+    int batchSize = 20;
+
 
     public void processStudentsInParallel() {
-//        load student when empty
-        if (studentRepository.findAll().isEmpty()) {
-            ;
-            studentRepository.saveAll(Student.generateStudents(10000));
-        }
 
-//        get all student
-        List<Student> allStudents = studentRepository.findAll();
+        List<Student> allStudents = getAllStudents();
 
-//        Chunk Size
-        int batchSize = 2000;
-//        Splits batches
+        clearSuccessFullyLoadedMasterAndSubBatchData();
+
         List<List<Student>> batches = splitIntoBatches(allStudents, batchSize);
-        log.info("batch creation done....{}", batches.size());
 
-//        Master batch Add
+        MasterBatch master = loadMastedBatchDataIntoDB();
+
+        List<SubBatch> subBatches = getSubBatchList(batches, master);
+
+        // Simulate work
+        simulatedWork();
+
+        master = getMasterBatchAndUpdateToInProgress(master);
+
+        addBatchesToJoinPool(subBatches);
+
+        try {
+            master.setStudentIds(allStudents.stream().map(Student::getId).toList());
+            handleMasterStatusWhenBatchFailed(master);
+        } catch (Exception e) {
+            log.error("Error during processing: ", e);
+            master.setStatus(MasterBatch.Status.INTERRUPTED);
+        } finally {
+            master.setEndTime(LocalDateTime.now());
+            masterBatchRepository.save(master);
+
+            executor.shutdown();
+            try {
+                if (!executor.awaitTermination(60, TimeUnit.SECONDS)) {
+                    executor.shutdownNow();
+                }
+            } catch (InterruptedException e) {
+                executor.shutdownNow();
+            }
+            log.info("Batch processing completed.");
+        }
+    }
+
+    private void handleMasterStatusWhenBatchFailed(MasterBatch master) {
+        if (subBatchRepository.findAll().stream().anyMatch(b -> b.getStatus().equals(SubBatch.Status.FAILED))) {
+            master.setStatus(MasterBatch.Status.INTERRUPTED);
+        } else {
+            master.setStatus(MasterBatch.Status.COMPLETE);
+        }
+    }
+
+    private void addBatchesToJoinPool(List<SubBatch> subBatches) {
+        try (ForkJoinPool forkJoinPool = new ForkJoinPool(1)) {
+            forkJoinPool.submit(
+                    () -> subBatches.parallelStream().forEach(batch -> processBatch(batch.getStudentIds(), batch))
+            );
+        }
+    }
+
+    private MasterBatch getMasterBatchAndUpdateToInProgress(MasterBatch master) {
+        master.setStatus(MasterBatch.Status.IN_PROGRESS);
+        master = masterBatchRepository.save(master);
+        return master;
+    }
+
+    private static void simulatedWork() {
+        try {
+            Thread.sleep(10);
+        } catch (InterruptedException ignored) {
+        }
+    }
+
+    private MasterBatch loadMastedBatchDataIntoDB() {
         MasterBatch master = MasterBatch.builder()
                 .startTime(LocalDateTime.now())
                 .status(MasterBatch.Status.START)
                 .build();
 
         master = masterBatchRepository.save(master);
-        log.info("add master record in table... {} with status {}", master.getMasterId(), master.getStatus());
 
+        log.info("Master record created ID : {}", master.getMasterId());
+        return master;
+    }
+
+    private void clearSuccessFullyLoadedMasterAndSubBatchData() {
+        if (!masterBatchRepository.findAll().isEmpty() && masterBatchRepository.findAll().getFirst().getStatus() == MasterBatch.Status.COMPLETE) {
+            log.info("Delete master and sub batch data of successfully loaded.");
+            masterBatchRepository.deleteAll();
+            subBatchRepository.deleteAll();
+        }
+    }
+
+    private List<SubBatch> getSubBatchList(List<List<Student>> batches, MasterBatch master) {
         List<SubBatch> subBatches = new ArrayList<>();
+
         for (int i = 0; i < batches.size(); i++) {
             SubBatch subBatch = SubBatch.builder()
                     .batchNumber(i + 1)
@@ -61,74 +137,64 @@ public class StudentBatchService {
                     .build();
             subBatches.add(subBatch);
         }
+
         subBatchRepository.saveAll(subBatches);
-
-        // Simulate work
-        try {
-            Thread.sleep(10);
-            log.info("Delay between start and in_progress");
-        } catch (InterruptedException ignored) {
-
-        }
-
-
-        List<Long> allProcessedIds = new ArrayList<>();
-
-        try {
-            master.setStatus(MasterBatch.Status.IN_PROGRESS);
-
-            master = masterBatchRepository.save(master);
-            log.info("master update {} with status {}", master.getMasterId(), master.getStatus());
-
-            List<Future<List<Long>>> futures = new ArrayList<>();
-
-
-            for (List<Student> batch : batches) {
-                futures.add(executor.submit(() -> processBatch(batch)));
-
-            }
-
-            for (Future<List<Long>> future : futures) {
-                allProcessedIds.addAll(future.get()); // waits for each task
-            }
-
-            master.setStudentIds(allProcessedIds);
-            master.setStatus(MasterBatch.Status.COMPLETE);
-            log.info("master process completed....");
-
-        } catch (Exception e) {
-            log.error("Error during parallel processing: ", e);
-            master.setStatus(MasterBatch.Status.INTERRUPTED);
-        } finally {
-            master.setEndTime(LocalDateTime.now());
-            masterBatchRepository.save(master);
-            log.info("master process completed.... updated master");
-        }
+        return subBatches;
     }
 
-    private List<Long> processBatch(List<Student> students) {
-        log.info("batch task processing.... started");
-        List<Long> processed = new ArrayList<>();
-        for (Student student : students) {
-            // Simulate work
-            try {
-                Thread.sleep(10); // simulate per-student task
-            } catch (InterruptedException ignored) {
-            }
+    private List<Student> getAllStudents() {
+        List<Student> allStudents = studentRepository.findAll();
 
-            processed.add(student.getId());
+        if (allStudents.isEmpty()) {
+            allStudents = studentRepository.saveAll(Student.generateStudents(100));
         }
-        log.info("batch task processing.... completed");
+        return allStudents;
+    }
+
+    private List<Long> processBatch(List<Long> studentsBatch, SubBatch subBatch) {
+        log.info("Starting sub-batch: {}", subBatch.getBatchNumber());
+        List<Long> processed = new ArrayList<>();
+        subBatch.setStatus(SubBatch.Status.IN_PROGRESS);
+        subBatch.setStartTime(LocalDateTime.now());
+        subBatchRepository.save(subBatch);
+
+        try {
+            somethingWithStudentBatch(studentsBatch, processed);
+            subBatch.setStatus(SubBatch.Status.COMPLETED);
+        } catch (Exception e) {
+            log.error("Failed sub-batch: {}", subBatch.getBatchNumber(), e);
+            subBatch.setStatus(SubBatch.Status.FAILED);
+        } finally {
+            subBatch.setEndTime(LocalDateTime.now());
+            subBatchRepository.save(subBatch);
+            log.info("Completed sub-batch: {}", subBatch.getBatchNumber());
+        }
+
         return processed;
     }
 
-    //    to Split into small batches
-    private List<List<Student>> splitIntoBatches(List<Student> students, int batchSize)  {
+    private static void somethingWithStudentBatch(List<Long> studentsBatch, List<Long> processed) throws Exception {
+        for (Long student : studentsBatch) {
+            try {
+                Thread.sleep(5); // Simulate processing
+                processed.add(student);
+            } catch (InterruptedException e) {
+                log.warn("Student processing interrupted: {}", student);
+            }
+            simulatedWork();
+            if (ATOMIC_INTEGER.getAndIncrement() == 3) {
+                throw new Exception("Temp Exception");
+            }
+        }
+    }
+
+    private List<List<Student>> splitIntoBatches(List<Student> students, int batchSize) {
         List<List<Student>> batches = new ArrayList<>();
         for (int i = 0; i < students.size(); i += batchSize) {
             int end = Math.min(i + batchSize, students.size());
             batches.add(students.subList(i, end));
         }
+        log.info("Batch creation done: {} of size  {}", batches.size(), batchSize);
         return batches;
     }
 }

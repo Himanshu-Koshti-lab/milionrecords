@@ -34,18 +34,22 @@ public class StudentBatchService {
 
     int batchSize = 20;
 
+    List<SubBatch> subBatches = new ArrayList<>();
 
     public void processStudentsInParallel() {
 
-        List<Student> allStudents = getAllStudents();
+        MasterBatch master = checkSuccessFullyLoadedMasterAndSubBatchData();
 
-        clearSuccessFullyLoadedMasterAndSubBatchData();
+        if (master.getStatus() == MasterBatch.Status.START) {
+            List<Student> allStudents = getAllStudents();
+            List<List<Student>> batches = splitIntoBatches(allStudents, batchSize);
+            subBatches = getSubBatchList(batches, master);
+            log.info("subbatch Size  New : {}", subBatches.size());
+        } else {
+            subBatches = subBatchRepository.findAll().stream().filter(subBatch -> subBatch.getStatus().equals(SubBatch.Status.FAILED)).toList();
+            log.info("subbatch Size  Failed : {}", subBatches.size());
+        }
 
-        List<List<Student>> batches = splitIntoBatches(allStudents, batchSize);
-
-        MasterBatch master = loadMastedBatchDataIntoDB();
-
-        List<SubBatch> subBatches = getSubBatchList(batches, master);
 
         // Simulate work
         simulatedWork();
@@ -55,7 +59,6 @@ public class StudentBatchService {
         addBatchesToJoinPool(subBatches);
 
         try {
-            master.setStudentIds(allStudents.stream().map(Student::getId).toList());
             handleMasterStatusWhenBatchFailed(master);
         } catch (Exception e) {
             log.error("Error during processing: ", e);
@@ -86,9 +89,7 @@ public class StudentBatchService {
 
     private void addBatchesToJoinPool(List<SubBatch> subBatches) {
         try (ForkJoinPool forkJoinPool = new ForkJoinPool(1)) {
-            forkJoinPool.submit(
-                    () -> subBatches.parallelStream().forEach(batch -> processBatch(batch.getStudentIds(), batch))
-            );
+            forkJoinPool.submit(() -> subBatches.parallelStream().forEach(batch -> processBatch(batch.getStudentIds(), batch)));
         }
     }
 
@@ -106,10 +107,7 @@ public class StudentBatchService {
     }
 
     private MasterBatch loadMastedBatchDataIntoDB() {
-        MasterBatch master = MasterBatch.builder()
-                .startTime(LocalDateTime.now())
-                .status(MasterBatch.Status.START)
-                .build();
+        MasterBatch master = MasterBatch.builder().startTime(LocalDateTime.now()).studentIds(studentRepository.findAll().stream().map(Student::getId).toList()).status(MasterBatch.Status.START).build();
 
         master = masterBatchRepository.save(master);
 
@@ -117,12 +115,18 @@ public class StudentBatchService {
         return master;
     }
 
-    private void clearSuccessFullyLoadedMasterAndSubBatchData() {
-        if (!masterBatchRepository.findAll().isEmpty() && masterBatchRepository.findAll().getFirst().getStatus() == MasterBatch.Status.COMPLETE) {
+    private MasterBatch checkSuccessFullyLoadedMasterAndSubBatchData() {
+
+        if (masterBatchRepository.findAll().isEmpty()) return loadMastedBatchDataIntoDB();
+
+        if (masterBatchRepository.findAll().getFirst().getStatus() == MasterBatch.Status.COMPLETE) {
             log.info("Delete master and sub batch data of successfully loaded.");
             masterBatchRepository.deleteAll();
             subBatchRepository.deleteAll();
+            return loadMastedBatchDataIntoDB();
         }
+
+        return masterBatchRepository.findAll().getFirst();
     }
 
     private List<SubBatch> getSubBatchList(List<List<Student>> batches, MasterBatch master) {

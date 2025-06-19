@@ -31,7 +31,7 @@ public class StudentBatchScheduler {
             } catch (Exception e) {
                 log.error("Error during scheduled batch:", e);
             }
-        }, 0, 600, TimeUnit.SECONDS); // first run immediately, then every 60 min
+        }, 0, 20, TimeUnit.SECONDS); // first run immediately, then every 60 min
     }
 
     @PreDestroy

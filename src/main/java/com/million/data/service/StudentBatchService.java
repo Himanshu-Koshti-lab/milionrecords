@@ -30,24 +30,32 @@ public class StudentBatchService {
 
 
     public static final AtomicInteger ATOMIC_INTEGER = new AtomicInteger(0);
+    public static final AtomicInteger SCHEDULE_COUNTER = new AtomicInteger(0);
     private final ExecutorService executor = Executors.newFixedThreadPool(2); // processing threads
 
-    int batchSize = 20;
+    int batchSize = 6;
 
     List<SubBatch> subBatches = new ArrayList<>();
 
     public void processStudentsInParallel() {
 
-        MasterBatch master = checkSuccessFullyLoadedMasterAndSubBatchData();
+       if(!(SCHEDULE_COUNTER.getAndIncrement() < 2)){
+           log.info("scheduler ran twice already.");
+           return;
+       }
+
+        MasterBatch master = checkSuccessFullyLoadedMasterAndSubBatchDataOrReturnNewMasterBatch();
 
         if (master.getStatus() == MasterBatch.Status.START) {
+            log.info("New master batch created.");
             List<Student> allStudents = getAllStudents();
             List<List<Student>> batches = splitIntoBatches(allStudents, batchSize);
             subBatches = getSubBatchList(batches, master);
-            log.info("subbatch Size  New : {}", subBatches.size());
+            log.info("Subbatch Size  New : {}", subBatches.size());
         } else {
+            log.info("Continue with last load Id : {} with status : {}.", master.getMasterId(), master.getStatus());
             subBatches = subBatchRepository.findAll().stream().filter(subBatch -> subBatch.getStatus().equals(SubBatch.Status.FAILED)).toList();
-            log.info("subbatch Size  Failed : {}", subBatches.size());
+            log.info("Subbatch Size  Failed : {}", subBatches.size());
         }
 
 
@@ -75,7 +83,6 @@ public class StudentBatchService {
             } catch (InterruptedException e) {
                 executor.shutdownNow();
             }
-            log.info("Batch processing completed.");
         }
     }
 
@@ -84,6 +91,7 @@ public class StudentBatchService {
             master.setStatus(MasterBatch.Status.INTERRUPTED);
         } else {
             master.setStatus(MasterBatch.Status.COMPLETE);
+            log.info("Batch processing completed.");
         }
     }
 
@@ -115,7 +123,7 @@ public class StudentBatchService {
         return master;
     }
 
-    private MasterBatch checkSuccessFullyLoadedMasterAndSubBatchData() {
+    private MasterBatch checkSuccessFullyLoadedMasterAndSubBatchDataOrReturnNewMasterBatch() {
 
         if (masterBatchRepository.findAll().isEmpty()) return loadMastedBatchDataIntoDB();
 
@@ -147,10 +155,10 @@ public class StudentBatchService {
     }
 
     private List<Student> getAllStudents() {
-        List<Student> allStudents = studentRepository.findAll();
+        List<Student> allStudents = studentRepository.findAll().stream().limit(35).toList();
 
         if (allStudents.isEmpty()) {
-            allStudents = studentRepository.saveAll(Student.generateStudents(100));
+            allStudents = studentRepository.saveAll(Student.generateStudents(1000));
         }
         return allStudents;
     }
@@ -165,13 +173,13 @@ public class StudentBatchService {
         try {
             somethingWithStudentBatch(studentsBatch, processed);
             subBatch.setStatus(SubBatch.Status.COMPLETED);
+            log.info("Completed sub-batch: {}", subBatch.getBatchNumber());
         } catch (Exception e) {
             log.error("Failed sub-batch: {}", subBatch.getBatchNumber(), e);
             subBatch.setStatus(SubBatch.Status.FAILED);
         } finally {
             subBatch.setEndTime(LocalDateTime.now());
             subBatchRepository.save(subBatch);
-            log.info("Completed sub-batch: {}", subBatch.getBatchNumber());
         }
 
         return processed;
@@ -180,13 +188,13 @@ public class StudentBatchService {
     private static void somethingWithStudentBatch(List<Long> studentsBatch, List<Long> processed) throws Exception {
         for (Long student : studentsBatch) {
             try {
-                Thread.sleep(5); // Simulate processing
+                Thread.sleep(700); // Simulate processing
                 processed.add(student);
             } catch (InterruptedException e) {
                 log.warn("Student processing interrupted: {}", student);
             }
             simulatedWork();
-            if (ATOMIC_INTEGER.getAndIncrement() == 3) {
+            if (ATOMIC_INTEGER.getAndIncrement()/3 == 0) {
                 throw new Exception("Temp Exception");
             }
         }

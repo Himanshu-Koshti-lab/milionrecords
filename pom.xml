@@ -9,9 +9,9 @@
 		<relativePath/> <!-- lookup parent from repository -->
 	</parent>
 	<groupId>com.million.data</groupId>
-	<artifactId>demo</artifactId>
+	<artifactId>millionRecord</artifactId>
 	<version>0.0.1-SNAPSHOT</version>
-	<name>demo</name>
+	<name>millionRecord</name>
 	<description>To batch process millions of records in batch</description>
 	<url/>
 	<licenses>
